@@ -20,15 +20,16 @@ func main() {
 		fmt.Println("json err:", err)
 		return
 	}
-	fmt.Println(string(jdata))
+	fmt.Println(string(data))
 	// json解码
 	var lily2 Person
-	if err := json.Unmarshal([]byte(data), &lily2),err!=nil{
+	err = json.Unmarshal([]byte(data), &lily2) // 修正：正确语法
+	if err != nil {                            // 修正：分离赋值和条件判断
 		fmt.Println("json err:", err)
 		return
 	}
 	fmt.Println(lily2.Name)
 	fmt.Println(lily2.Age)
 	fmt.Println(lily2.Id)
-	fmt.Println(lily2.Gender)
+	fmt.Println(lily2.gender)
 }
