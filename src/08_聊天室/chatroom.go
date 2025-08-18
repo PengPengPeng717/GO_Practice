@@ -3,7 +3,20 @@ package main
 import (
 	"fmt"
 	"net"
+	"strings"
 )
+
+type User struct {
+	name string
+	id   string
+	msg  chan string
+}
+
+// 创建一个全局的map,用于保存所有用户
+var allusers = make(map[string]User, 10)
+
+// 定义一个message全局通道，用于接收任何人发送的消息
+var message = make(chan string, 10)
 
 func main() {
 	// 创建服务器
@@ -13,8 +26,12 @@ func main() {
 		return
 	}
 	// defer listener.Close()
+	// 启动全局唯一的go程，负责监听message通道，并把消息广播给所有客户端
+	// go broadcast()
 	fmt.Println("服务器启动成功")
+	go broadcast()
 	for {
+
 		//监听
 		fmt.Println("监听中")
 		conn, err := listener.Accept()
@@ -35,18 +52,117 @@ func main() {
 
 // 处理具体业务
 func handler(conn net.Conn) {
+
 	fmt.Println("处理业务")
 	//TODO
 	// 创建一个缓冲区
-	buf := make([]byte, 1024)
-	// 循环读取客户端发送的数据
+	clientArr := conn.RemoteAddr().String()
+	fmt.Println("客户端已连接：", clientArr)
+	newUser := User{
+		name: clientArr,
+		id:   clientArr,
+		msg:  make(chan string),
+	}
+
+	// 添加用户到map
+	allusers[newUser.id] = newUser
+
+	//启动go程，负责将msg信息返回给客户端
+	go writeBackToClient(&newUser, conn)
+
+	//向message写入数据，当前用户上线的消息，用于通知所有人
+	loginInfo := fmt.Sprintf("用户[%s]:[%s]上线了\n", newUser.id, newUser.name)
+	message <- loginInfo
 	for {
+		buf := make([]byte, 1024)
+		// 循环读取客户端发送的数据
 		// 读取数据
 		n, err := conn.Read(buf)
 		if err != nil {
 			fmt.Println("read err:", err)
+			// 用户离线处理
+			logoutInfo := fmt.Sprintf("用户[%s]:[%s]下线了\n", newUser.id, newUser.name)
+			message <- logoutInfo
+			delete(allusers, newUser.id)
 			return
 		}
+
+		// 处理接收到的数据并广播给所有用户
+
 		fmt.Println("接收到的数据：", string(buf[:n-1]), "长度：", n)
+
+		// --················-- 业务逻辑 ---······················-
+		//1.查询当前所有的用户who
+		// a.先判读接收的数据是不是who -》 长度&&字符串
+		// b.遍历allUser这个map，将map中的用户名发送给当前用户:key:=userid,将id和name拼接成一个字符串，返回给客户端
+		userInput := string(buf[:n-1])
+		if len(userInput) == 4 && userInput == "\\who" {
+			// 遍历map
+			fmt.Println("当前用户列表：")
+			// 定义一个切片，包含所有用户信息
+			var userInfos []string
+			// 遍历map
+			for _, user := range allusers {
+				userInfo := fmt.Sprintf("%s:%s\n", user.id, user.name)
+				userInfos = append(userInfos, userInfo)
+			}
+			//最终写到管道中，一定是个字符串
+			r := strings.Join(userInfos, "\n")
+			//将数据返回给查询的客户端
+			newUser.msg <- r
+
+		} else if len(userInput) > 9 && userInput[:7] == "\\rename" {
+			// 2. rename
+			// 规则:renane|Duke
+			// 1. 获取用户输入,判断长度至少是7，判断字符是rename
+			// 2. 获取用户输入,使用|进行切割，取第二个字段
+			// 3. 更新用户名字newUser.name=Duke
+			// 4. 告诉用户修改成功
+			newUser.name = strings.Split(userInput, "|")[1]
+			allusers[newUser.id] = newUser
+			fmt.Println("修改用户名成功\n:", newUser.name)
+			newUser.msg <- "修改用户名成功:" + newUser.name
+
+		} else {
+			if len(userInput) > 0 {
+				// 将用户发送的消息广播给所有人
+				msgInfo := fmt.Sprintf("[%s]: %s\n", newUser.name, userInput)
+				message <- msgInfo
+			}
+		}
+		// --------------------------------------------------------
 	}
+}
+
+// 向所有的用户广播消息，启动一个全局的go程
+func broadcast() {
+	fmt.Println("广播启动")
+	defer fmt.Println("广播结束,broadcast job结束")
+	for {
+		fmt.Println("广播中...")
+		// 1.从message中读取数据
+		info := <-message
+		fmt.Println("广播的数据：", info)
+		// 2.将数据写入到每一个msg管道中
+		for _, user := range allusers {
+			user.msg <- info
+		}
+	}
+}
+
+// 每个用户应该还有一个用来监听msg管道的go程，负责将数据返回客户端
+func writeBackToClient(user *User, conn net.Conn) {
+	fmt.Printf("user: %s 的go程正在监听自己的msg管道:\n", user.name)
+	// 1.从msg管道中读取数据
+	for data := range user.msg {
+		fmt.Printf("user:%s写会给客户端的数据为:%s\n", user.name, data)
+		// 2.将数据返回给client
+		_, err := conn.Write([]byte(data))
+		if err != nil {
+			fmt.Printf("向用户 %s 发送数据失败: %v\n", user.name, err)
+			// 连接已关闭，退出循环
+			break
+		}
+	}
+	fmt.Printf("用户 %s 的消息监听协程已退出\n", user.name)
 }
